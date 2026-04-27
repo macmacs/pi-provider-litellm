@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { CacheFile } from "./types.js";
 
 export function fingerprint(apiKey: string): string {
@@ -42,4 +43,11 @@ function isCacheFileShape(value: unknown): value is CacheFile {
     (v.source === "model_info" || v.source === "models_list") &&
     Array.isArray(v.models)
   );
+}
+
+export async function writeCache(path: string, cache: CacheFile): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmp, JSON.stringify(cache, null, 2), "utf8");
+  await rename(tmp, path);
 }
