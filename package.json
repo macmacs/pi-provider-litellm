@@ -37,7 +37,7 @@
     "extensions": [
       "./dist/index.js"
     ],
-    "image": "https://raw.githubusercontent.com/balcsida/pi-provider-litellm/main/assets/pi_litellm_gallery.png"
+    "image": "https://raw.githubusercontent.com/balcsida/pi-provider-litellm/refs/heads/main/assets/pi_litellm_gallery.png"
   },
   "scripts": {
     "clean": "shx rm -rf dist",
