@@ -72,7 +72,7 @@ Stored pi credentials for `litellm` take precedence over `LITELLM_API_KEY`; the 
 
 ## Cache
 
-The model list is cached at `~/.pi/agent/litellm-models.json` with a sha256 fingerprint of the base URL + API key. Changing either invalidates the cache automatically.
+The model list is cached at `~/.pi/agent/litellm-models.json` with a keyed fingerprint of the base URL + API key. Changing either invalidates the cache automatically.
 
 ## Troubleshooting
 

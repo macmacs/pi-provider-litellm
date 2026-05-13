@@ -1,10 +1,12 @@
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { CacheFile } from "./types.js";
 
+const FINGERPRINT_KEY = "pi-provider-litellm-cache-fingerprint-v1";
+
 export function fingerprint(apiKey: string): string {
-  return createHash("sha256").update(apiKey).digest("hex");
+  return createHmac("sha256", FINGERPRINT_KEY).update(apiKey).digest("hex");
 }
 
 export function isCacheValid(cache: CacheFile | null, baseUrl: string, apiKey: string): boolean {
