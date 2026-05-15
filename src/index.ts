@@ -5,7 +5,7 @@ import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-codin
 import { AuthStorage, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { fingerprint, readCache, writeCache } from "./cache.js";
 import { setupLiteLLMCostTracking } from "./cost.js";
-import { discoverModels, normalizeBaseUrl } from "./discover.js";
+import { discoverModels, normalizeBaseUrl, shouldSuppressReasoningContent } from "./discover.js";
 import { getSessionIdFromFile } from "./litellm.js";
 import type { AuthFileEntry, CacheFile, DiscoveryOptions, DiscoveryResult, ResolvedCredentials } from "./types.js";
 
@@ -129,6 +129,33 @@ function modifyLiteLLMModels(models: Model<Api>[], cred: OAuthCredentials): Mode
   return models.map((m) => (m.provider === PROVIDER_NAME ? { ...m, baseUrl: `${baseUrl}/v1` } : m));
 }
 
+function prepareLiteLLMRequestPayload(
+  payload: Record<string, unknown>,
+  modelId: string | undefined,
+  sessionId: string | undefined,
+): Record<string, unknown> | undefined {
+  let next: Record<string, unknown> | undefined;
+  const update = (key: string, value: unknown): void => {
+    if (payload[key] !== undefined) return;
+    next ??= { ...payload };
+    next[key] = value;
+  };
+
+  if (modelId && shouldSuppressReasoningContent(modelId)) {
+    update("include_reasoning", false);
+    update("reasoning_content", false);
+    update("merge_reasoning_content_in_choices", true);
+    update("thinking", { type: "disabled" });
+  }
+
+  if (sessionId) {
+    next ??= { ...payload };
+    next.litellm_session_id = sessionId;
+  }
+
+  return next;
+}
+
 export default async function (pi: ExtensionAPI): Promise<void> {
   const creds = await resolveCredentials();
   const cache = await readCache(getCachePath());
@@ -243,11 +270,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
   pi.on("before_provider_request", (event, ctx) => {
     if (ctx.model?.provider !== PROVIDER_NAME) return;
-    if (!sessionId) return;
     if (typeof event.payload !== "object" || event.payload === null) return;
-    return {
-      ...(event.payload as Record<string, unknown>),
-      litellm_session_id: sessionId,
-    };
+    return prepareLiteLLMRequestPayload(event.payload as Record<string, unknown>, ctx.model?.id, sessionId);
   });
 }
