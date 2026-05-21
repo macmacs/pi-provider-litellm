@@ -192,6 +192,54 @@ describe("discoverModels fallback to /v1/models", () => {
     });
   }
 
+  it("uses models.dev metadata when LiteLLM returns provider ownership", async () => {
+    const urls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = input instanceof URL ? input.toString() : String(input);
+      urls.push(url);
+      if (url.endsWith("/model/info")) return new Response(null, { status: 403 });
+      if (url.endsWith("/v1/models")) {
+        return jsonResponse(200, {
+          data: [{ id: "gpt-5.5", object: "model", owned_by: "openai" }],
+        });
+      }
+      if (url === "https://models.dev/api.json") {
+        return jsonResponse(200, {
+          openai: {
+            models: {
+              "gpt-5.5": {
+                id: "gpt-5.5",
+                name: "GPT-5.5",
+                reasoning: true,
+                modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+                limit: { context: 1_050_000, input: 922_000, output: 128_000 },
+                cost: { input: 5, output: 30, cache_read: 0.5 },
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const result = await discoverModels("https://litellm.example.com", "sk-test", {});
+
+    expect(urls).toContain("https://models.dev/api.json");
+    expect(result.source).toBe("models_list");
+    expect(result.models).toHaveLength(1);
+    expect(result.models[0]).toMatchObject({
+      id: "gpt-5.5",
+      name: "GPT-5.5",
+      reasoning: true,
+      thinkingLevelMap: { off: null, xhigh: "xhigh" },
+      input: ["text", "image"],
+      contextWindow: 1050000,
+      maxTokens: 128000,
+      compat: { supportsStore: false },
+    });
+    expect(result.models[0]?.cost).toEqual({ input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 });
+  });
+
   it("throws when /model/info returns a non-401/403/404 error", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 500 }));
     await expect(discoverModels("https://litellm.example.com", "sk-test", {})).rejects.toThrow(/500/);
