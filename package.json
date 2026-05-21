@@ -52,7 +52,7 @@
     "prepublishOnly": "npm run check && npm run clean && npm run build && npm run supply-chain:guard"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.19.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "^0.75.4",
