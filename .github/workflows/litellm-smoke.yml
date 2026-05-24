@@ -1,13 +1,7 @@
 name: LiteLLM Smoke
 
 on:
-  workflow_dispatch:
-    inputs:
-      require_vendors:
-        description: Fail unless OpenAI, Anthropic, and Gemini secrets are configured
-        required: false
-        type: boolean
-        default: false
+  workflow_dispatch: {}
   schedule:
     - cron: '23 4 * * 1'
   push:
@@ -22,7 +16,6 @@ on:
 
 permissions:
   contents: read
-  models: read
 
 jobs:
   smoke:
@@ -33,10 +26,10 @@ jobs:
       LITELLM_API_KEY: sk-ci-litellm-smoke
       LITELLM_MASTER_KEY: sk-ci-litellm-smoke
       LITELLM_IMAGE: docker.litellm.ai/berriai/litellm:main-latest
-      GH_MODELS_SMOKE_MODEL: ${{ vars.GH_MODELS_SMOKE_MODEL || 'openai/gpt-4o-mini' }}
-      OPENAI_SMOKE_MODEL: ${{ vars.OPENAI_SMOKE_MODEL || 'gpt-4.1-nano' }}
-      ANTHROPIC_SMOKE_MODEL: ${{ vars.ANTHROPIC_SMOKE_MODEL || 'claude-haiku-4-5-20251001' }}
-      GEMINI_SMOKE_MODEL: ${{ vars.GEMINI_SMOKE_MODEL || 'gemini-2.5-flash-lite' }}
+      LITELLM_SMOKE_MODELS: vidaimock-openai anthropic/vidaimock-claude
+      LITELLM_CLI_SMOKE_MODEL: vidaimock-openai
+      VIDAIMOCK_BASE_URL: http://127.0.0.1:8100
+      VIDAIMOCK_VERSION: v0.2.7
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -49,105 +42,78 @@ jobs:
       - run: npm ci
       - run: npm run build
 
-      - name: Write LiteLLM smoke config
-        id: config
+      - name: Install VidaiMock
         shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          REQUIRE_VENDORS: ${{ github.event_name == 'workflow_dispatch' && inputs.require_vendors && '1' || '0' }}
         run: |
           set -euo pipefail
 
-          if [[ "$REQUIRE_VENDORS" == "1" ]]; then
-            missing=()
-            [[ -n "${OPENAI_API_KEY:-}" ]] || missing+=("OPENAI_API_KEY")
-            [[ -n "${ANTHROPIC_API_KEY:-}" ]] || missing+=("ANTHROPIC_API_KEY")
-            [[ -n "${GEMINI_API_KEY:-}" ]] || missing+=("GEMINI_API_KEY")
-            if (( ${#missing[@]} > 0 )); then
-              printf 'Missing required vendor secrets: %s\n' "${missing[*]}" >&2
-              exit 1
+          mkdir -p .tmp/bin
+          asset="vidaimock-linux-x64.tar.gz"
+          curl -fsSL \
+            "https://github.com/vidaiUK/VidaiMock/releases/download/${VIDAIMOCK_VERSION}/${asset}" \
+            -o ".tmp/${asset}"
+          curl -fsSL \
+            "https://github.com/vidaiUK/VidaiMock/releases/download/${VIDAIMOCK_VERSION}/${asset%.tar.gz}.sha256" \
+            -o ".tmp/${asset%.tar.gz}.sha256"
+          (cd .tmp && sha256sum -c "${asset%.tar.gz}.sha256")
+          tar -xzf ".tmp/${asset}" -C .tmp
+          install -m 0755 .tmp/vidaimock/vidaimock .tmp/bin/vidaimock
+          .tmp/bin/vidaimock --version
+
+      - name: Start VidaiMock
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          .tmp/bin/vidaimock --host 0.0.0.0 --port 8100 > .tmp/vidaimock.log 2>&1 &
+          echo "$!" > .tmp/vidaimock.pid
+
+      - name: Wait for VidaiMock
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for _ in {1..30}; do
+            if curl -fsS --connect-timeout 1 --max-time 3 "$VIDAIMOCK_BASE_URL/v1/models" >/tmp/vidaimock-models.json; then
+              cat /tmp/vidaimock-models.json
+              exit 0
             fi
-          fi
+            sleep 1
+          done
+          cat .tmp/vidaimock.log >&2 || true
+          exit 1
+
+      - name: Write LiteLLM smoke config
+        shell: bash
+        run: |
+          set -euo pipefail
 
           mkdir -p .tmp
-          smoke_models=("github-models-openai")
-
           cat > .tmp/litellm_config.yaml <<YAML
           model_list:
-            - model_name: github-models-openai
+            - model_name: vidaimock-openai
               litellm_params:
-                model: ${GH_MODELS_SMOKE_MODEL}
-                api_base: https://models.github.ai/inference
-                api_key: os.environ/GITHUB_TOKEN
-          YAML
-
-          if [[ -n "${OPENAI_API_KEY:-}" ]]; then
-            smoke_models+=("openai-direct")
-            cat >> .tmp/litellm_config.yaml <<YAML
-            - model_name: openai-direct
+                model: openai/gpt-4o-mini
+                api_base: http://host.docker.internal:8100/v1
+                api_key: sk-vidaimock
+            - model_name: anthropic/vidaimock-claude
               litellm_params:
-                model: openai/${OPENAI_SMOKE_MODEL}
-                api_key: os.environ/OPENAI_API_KEY
-          YAML
-          else
-            echo "Skipping OpenAI direct smoke: OPENAI_API_KEY is not configured."
-          fi
-
-          if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-            smoke_models+=("anthropic-direct")
-            cat >> .tmp/litellm_config.yaml <<YAML
-            - model_name: anthropic-direct
-              litellm_params:
-                model: anthropic/${ANTHROPIC_SMOKE_MODEL}
-                api_key: os.environ/ANTHROPIC_API_KEY
-          YAML
-          else
-            echo "Skipping Anthropic direct smoke: ANTHROPIC_API_KEY is not configured."
-          fi
-
-          if [[ -n "${GEMINI_API_KEY:-}" ]]; then
-            smoke_models+=("gemini-direct")
-            cat >> .tmp/litellm_config.yaml <<YAML
-            - model_name: gemini-direct
-              litellm_params:
-                model: gemini/${GEMINI_SMOKE_MODEL}
-                api_key: os.environ/GEMINI_API_KEY
-          YAML
-          else
-            echo "Skipping Gemini direct smoke: GEMINI_API_KEY is not configured."
-          fi
-
-          cat >> .tmp/litellm_config.yaml <<YAML
+                model: anthropic/claude-3-5-sonnet
+                api_base: http://host.docker.internal:8100
+                api_key: sk-vidaimock
           general_settings:
             master_key: ${LITELLM_MASTER_KEY}
           YAML
 
-          {
-            echo 'models<<EOF'
-            printf '%s\n' "${smoke_models[@]}"
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
-
       - name: Start LiteLLM proxy
         shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -euo pipefail
           docker run -d \
             --name litellm-smoke \
+            --add-host=host.docker.internal:host-gateway \
             -p 4000:4000 \
             -v "$PWD/.tmp/litellm_config.yaml:/app/config.yaml:ro" \
-            -e GITHUB_TOKEN \
-            -e OPENAI_API_KEY \
-            -e ANTHROPIC_API_KEY \
-            -e GEMINI_API_KEY \
             -e LITELLM_MASTER_KEY \
             "$LITELLM_IMAGE" \
             --config /app/config.yaml
@@ -157,7 +123,7 @@ jobs:
         run: |
           set -euo pipefail
           for _ in {1..60}; do
-            if curl -fsS \
+            if curl -fsS --connect-timeout 1 --max-time 3 \
               -H "Authorization: Bearer $LITELLM_API_KEY" \
               "$LITELLM_BASE_URL/v1/models" >/tmp/litellm-models.json; then
               cat /tmp/litellm-models.json
@@ -170,14 +136,45 @@ jobs:
 
       - name: Run provider smoke
         env:
-          LITELLM_SMOKE_MODELS: ${{ steps.config.outputs.models }}
           LITELLM_SMOKE_TIMEOUT_MS: '60000'
         run: npx tsx scripts/smoke.ts
+
+      - name: Run Pi CLI smoke
+        env:
+          LITELLM_DISCOVERY_TIMEOUT_MS: '60000'
+          PI_CODING_AGENT_DIR: ${{ runner.temp }}/pi-cli-smoke
+        run: |
+          set -euo pipefail
+
+          rm -rf "$PI_CODING_AGENT_DIR"
+          ./node_modules/.bin/pi -e ./dist/index.js --list-models litellm 2>&1 | tee /tmp/pi-litellm-models.txt
+          grep -F "vidaimock-openai" /tmp/pi-litellm-models.txt
+          grep -F "anthropic/vidaimock-claude" /tmp/pi-litellm-models.txt
+
+          ./node_modules/.bin/pi \
+            -e ./dist/index.js \
+            --provider litellm \
+            --model "$LITELLM_CLI_SMOKE_MODEL" \
+            --no-tools \
+            --no-session \
+            -p "Reply with one short word." | tee /tmp/pi-litellm-response.txt
+          grep -F "mock response" /tmp/pi-litellm-response.txt
 
       - name: Dump LiteLLM logs
         if: failure()
         run: docker logs litellm-smoke || true
 
+      - name: Dump VidaiMock logs
+        if: failure()
+        run: cat .tmp/vidaimock.log || true
+
       - name: Stop LiteLLM proxy
         if: always()
         run: docker rm -f litellm-smoke || true
+
+      - name: Stop VidaiMock
+        if: always()
+        run: |
+          if [[ -f .tmp/vidaimock.pid ]]; then
+            kill "$(cat .tmp/vidaimock.pid)" 2>/dev/null || true
+          fi
