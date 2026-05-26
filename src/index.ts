@@ -19,6 +19,8 @@ const LOGIN_TIMEOUT_MS = 10_000;
 const CACHE_FILENAME = "litellm-models.json";
 const CACHE_STALE_MS = 24 * 60 * 60 * 1000;
 
+type RefreshResult = { models: ProviderModelConfig[]; source: string };
+
 function getAuthPath(): string {
   return join(getAgentDir(), "auth.json");
 }
@@ -298,7 +300,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
   const updateCosts = setupLiteLLMCostTracking(pi, models);
 
-  let refreshInProgress: Promise<unknown> | null = null;
+  let refreshInProgress: Promise<RefreshResult> | null = null;
 
   function discoveryDisabledReason(): string | null {
     if (isOffline()) return `${ENV_OFFLINE}=1`;
@@ -306,7 +308,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     return null;
   }
 
-  async function refreshModelsAndCosts(): Promise<{ models: ProviderModelConfig[]; source: string }> {
+  async function refreshModelsAndCosts(): Promise<RefreshResult> {
     const fresh = await resolveCredentials();
     const freshFp = fresh.apiKey ? fingerprint(fresh.apiKey) : undefined;
     if (!fresh.baseUrl || !fresh.apiKey || !freshFp) {
@@ -327,6 +329,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     return { models: result.models, source: result.source };
   }
 
+  function runRefresh(): Promise<RefreshResult> {
+    refreshInProgress ??= refreshModelsAndCosts().finally(() => {
+      refreshInProgress = null;
+    });
+    return refreshInProgress;
+  }
+
   pi.registerCommand("litellm-refresh", {
     description: "Re-discover models from the LiteLLM proxy.",
     handler: async (_args, ctx) => {
@@ -336,7 +345,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         return;
       }
       try {
-        const result = await refreshModelsAndCosts();
+        const result = await runRefresh();
         ctx.ui.notify(`LiteLLM: ${result.models.length} models refreshed (source: ${result.source})`, "info");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -350,12 +359,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     sessionId = getSessionIdFromFile(ctx.sessionManager.getSessionFile());
 
     if (discoveryDisabledReason() || !cacheFetchedAt || Date.now() - cacheFetchedAt <= CACHE_STALE_MS) return;
-    if (refreshInProgress) return;
-    refreshInProgress = refreshModelsAndCosts()
-      .catch(() => undefined)
-      .finally(() => {
-        refreshInProgress = null;
-      });
+    void runRefresh().catch(() => undefined);
   });
 
   pi.on("before_provider_request", (event, ctx) => {

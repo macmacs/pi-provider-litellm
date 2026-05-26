@@ -476,6 +476,77 @@ describe("feature parity", () => {
     expect(refreshedResult.message.usage.cost.total).toBeCloseTo(0.036, 6);
   });
 
+  it("shares concurrent litellm-refresh requests", async () => {
+    const agentDir = await mkdtemp(join(tmpdir(), "pi-provider-litellm-"));
+    process.env.LITELLM_BASE_URL = "https://litellm.example.com";
+    process.env.LITELLM_API_KEY = "sk-test";
+
+    const fp = scryptSync("sk-test", "pi-provider-litellm-cache-fingerprint-v1", 32).toString("hex");
+    await writeFile(
+      join(agentDir, "litellm-models.json"),
+      JSON.stringify({
+        baseUrl: "https://litellm.example.com",
+        apiKeyFingerprint: fp,
+        fetchedAt: Date.now(),
+        source: "model_info",
+        models: [{ id: "test-model", name: "test-model", cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }],
+      }),
+    );
+
+    let releaseFetch!: () => void;
+    const fetchGate = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    let callCount = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/model/info")) {
+        callCount++;
+        if (callCount > 1) throw new Error("overlapping discovery");
+        await fetchGate;
+        return jsonResponse(200, {
+          data: [
+            {
+              model_name: "test-model",
+              model_info: {
+                mode: "chat",
+                input_cost_per_token: 0.000006,
+                output_cost_per_token: 0.00003,
+              },
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const extension = await loadExtension(agentDir);
+    const pi = createPi();
+    await extension(pi);
+
+    const refreshCmd = pi.commands.get("litellm-refresh");
+    const notifications: Array<{ message: string; type: string }> = [];
+    const ctx = {
+      ui: {
+        notify: (message: string, type: string) => {
+          notifications.push({ message, type });
+        },
+      },
+    };
+
+    const firstRefresh = refreshCmd!.handler([], ctx);
+    await vi.waitFor(() => expect(callCount).toBe(1));
+    const secondRefresh = refreshCmd!.handler([], ctx);
+    releaseFetch();
+    await Promise.all([firstRefresh, secondRefresh]);
+
+    expect(callCount).toBe(1);
+    expect(notifications).toEqual([
+      { message: "LiteLLM: 1 models refreshed (source: model_info)", type: "info" },
+      { message: "LiteLLM: 1 models refreshed (source: model_info)", type: "info" },
+    ]);
+  });
+
   it("auto-refreshes stale cache on session_start", async () => {
     const agentDir = await mkdtemp(join(tmpdir(), "pi-provider-litellm-"));
     process.env.LITELLM_BASE_URL = "https://litellm.example.com";
