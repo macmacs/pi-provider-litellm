@@ -77,6 +77,13 @@ describe("buildCompat", () => {
     }
   });
 
+  it("adds cacheControlFormat for routed Anthropic aliases", () => {
+    expect(buildCompat("google/claude-sonnet-4-6")).toEqual({
+      supportsStore: false,
+      cacheControlFormat: "anthropic",
+    });
+  });
+
   it("matches case-insensitively", () => {
     expect(buildCompat("Opus-4.7")).toEqual({
       supportsStore: false,
