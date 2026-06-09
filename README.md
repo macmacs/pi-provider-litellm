@@ -40,6 +40,8 @@ Inside pi:
 /login litellm
 ```
 
+You can also run `/login`, select `Use a subscription`, then select `LiteLLM`.
+
 You'll be prompted for the base URL and API key. Credentials are persisted to `~/.pi/agent/auth.json`.
 
 ### Option B — environment variables
