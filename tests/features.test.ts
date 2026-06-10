@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.unmock("@earendil-works/pi-coding-agent");
+
 type TestProviderConfig = {
   baseUrl?: string;
   apiKey?: string;
@@ -14,7 +16,7 @@ type TestProviderConfig = {
 
 type TestCommand = {
   description: string;
-  handler: (args: string[], ctx: { ui: { notify: (message: string, type: string) => void } }) => Promise<void> | void;
+  handler: (args: string, ctx: { ui: { notify: (message: string, type: string) => void } }) => Promise<void> | void;
 };
 
 type TestPi = {
@@ -81,10 +83,9 @@ function createPi(): TestPi {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.resetModules();
-  vi.unmock("@earendil-works/pi-coding-agent");
-  process.env.LITELLM_BASE_URL = undefined;
-  process.env.LITELLM_API_KEY = undefined;
-  process.env.LITELLM_DISCOVERY_TIMEOUT_MS = undefined;
+  delete process.env.LITELLM_BASE_URL;
+  delete process.env.LITELLM_API_KEY;
+  delete process.env.LITELLM_DISCOVERY_TIMEOUT_MS;
 });
 
 describe("feature parity", () => {
@@ -455,7 +456,7 @@ describe("feature parity", () => {
     // Run /litellm-refresh to update models and costs
     const refreshCmd = pi.commands.get("litellm-refresh");
     const notifications: Array<{ message: string; type: string }> = [];
-    await refreshCmd!.handler([], {
+    await refreshCmd!.handler("", {
       ui: {
         notify: (message: string, type: string) => {
           notifications.push({ message, type });
@@ -534,9 +535,9 @@ describe("feature parity", () => {
       },
     };
 
-    const firstRefresh = refreshCmd!.handler([], ctx);
+    const firstRefresh = refreshCmd!.handler("", ctx);
     await vi.waitFor(() => expect(callCount).toBe(1));
-    const secondRefresh = refreshCmd!.handler([], ctx);
+    const secondRefresh = refreshCmd!.handler("", ctx);
     releaseFetch();
     await Promise.all([firstRefresh, secondRefresh]);
 

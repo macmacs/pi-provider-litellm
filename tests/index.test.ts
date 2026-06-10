@@ -14,6 +14,8 @@ const ENV_KEYS = [
 ];
 const ORIGINAL_ENV = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
 
+vi.unmock("@earendil-works/pi-coding-agent");
+
 type TestProviderConfig = {
   baseUrl?: string;
   apiKey?: string;
@@ -36,7 +38,20 @@ type TestProviderConfig = {
 
 type TestCommand = {
   description: string;
-  handler: (args: string[], ctx: { ui: { notify: (message: string, type: string) => void } }) => Promise<void> | void;
+  handler: (args: string, ctx: TestCommandContext) => Promise<void> | void;
+};
+
+type TestCommandContext = {
+  ui: {
+    input?: (title: string, placeholder?: string) => Promise<string | undefined>;
+    notify: (message: string, type: string) => void;
+  };
+  modelRegistry?: {
+    authStorage: {
+      set: (provider: string, credential: unknown) => void;
+    };
+    refresh?: () => void;
+  };
 };
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -159,12 +174,11 @@ type TestPi = {
 afterEach(() => {
   for (const key of ENV_KEYS) {
     const original = ORIGINAL_ENV.get(key);
-    if (original === undefined) process.env[key] = undefined;
+    if (original === undefined) delete process.env[key];
     else process.env[key] = original;
   }
   vi.restoreAllMocks();
   vi.resetModules();
-  vi.unmock("@earendil-works/pi-coding-agent");
 });
 
 describe("extension startup", () => {
@@ -176,6 +190,18 @@ describe("extension startup", () => {
     await extension(pi);
 
     expect(pi.providers[0]?.config.apiKey).toBe("$LITELLM_API_KEY");
+  });
+
+  it('treats literal "undefined" env values as unset', async () => {
+    process.env.LITELLM_BASE_URL = "undefined";
+    process.env.LITELLM_API_KEY = "undefined";
+    const agentDir = await makeAgentDir();
+    const extension = await loadExtension(agentDir);
+    const pi = createPi();
+
+    await extension(pi);
+
+    expect(pi.providers[0]?.config.baseUrl).toBe("https://litellm.example.com/v1");
   });
 
   it("discovers with the resolved stored auth key before LITELLM_API_KEY", async () => {
@@ -217,7 +243,7 @@ describe("extension startup", () => {
     const extension = await loadExtension(agentDir);
     const pi = createPi();
     await extension(pi);
-    await pi.commands.get("litellm-refresh")?.handler([], { ui: { notify } });
+    await pi.commands.get("litellm-refresh")?.handler("", { ui: { notify } });
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith("LiteLLM refresh disabled (LITELLM_DISCOVERY_TIMEOUT_MS=0)", "warning");
@@ -297,6 +323,83 @@ describe("extension startup", () => {
     expect(pi.providers).toHaveLength(2);
     expect(pi.providers[1]?.config.baseUrl).toBe("http://127.0.0.1:4000/v1");
     expect(registeredModels?.map((model) => model.id)).toEqual(["vidaimock-openai"]);
+  });
+
+  it("handles /login litellm without registering a conflicting command", async () => {
+    const agentDir = await makeAgentDir();
+    process.env.LITELLM_DISCOVERY_TIMEOUT_MS = "0";
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/model/info")) {
+        return jsonResponse(200, {
+          data: [{ model_name: "vidaimock-openai", model_info: { mode: "chat" } }],
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const extension = await loadExtension(agentDir);
+    const pi = createPi();
+    await extension(pi);
+
+    expect(pi.commands.has("login")).toBe(false);
+    const savedCredentials: Record<string, unknown> = {};
+    const promptMessages: string[] = [];
+    const notifications: Array<{ message: string; type: string }> = [];
+    const result = await pi.handlers.get("input")?.[0]?.(
+      { type: "input", text: "/login litellm", source: "interactive" },
+      {
+        hasUI: true,
+        ui: {
+          input: async (message: string, placeholder?: string) => {
+            promptMessages.push(message);
+            return placeholder ? " http://127.0.0.1:4000/v1 " : " sk-login ";
+          },
+          notify: (message: string, type: string) => notifications.push({ message, type }),
+        },
+        modelRegistry: {
+          authStorage: {
+            set: (provider: string, credential: unknown) => {
+              savedCredentials[provider] = credential;
+            },
+          },
+          refresh: vi.fn(),
+        },
+      },
+    );
+
+    expect(result).toEqual({ action: "handled" });
+    expect(promptMessages).toEqual(["Enter LiteLLM proxy URL (no trailing /v1):", "Enter API key:"]);
+    expect(savedCredentials.litellm).toMatchObject({
+      type: "oauth",
+      access: "sk-login",
+      refresh: "",
+      baseUrl: "http://127.0.0.1:4000",
+    });
+    const registeredModels = pi.providers[1]?.config.models as Array<{ id: string }> | undefined;
+    expect(pi.providers[1]?.config.baseUrl).toBe("http://127.0.0.1:4000/v1");
+    expect(registeredModels?.map((model) => model.id)).toEqual(["vidaimock-openai"]);
+    expect(notifications).toContainEqual({
+      message: "LiteLLM: 1 models discovered (source: model_info)",
+      type: "info",
+    });
+  });
+
+  it("continues input handling for non-LiteLLM login arguments", async () => {
+    const agentDir = await makeAgentDir();
+    const extension = await loadExtension(agentDir);
+    const pi = createPi();
+    await extension(pi);
+
+    const result = await pi.handlers.get("input")?.[0]?.(
+      { type: "input", text: "/login other", source: "interactive" },
+      {
+        ui: {
+          notify: vi.fn(),
+        },
+      },
+    );
+
+    expect(result).toEqual({ action: "continue" });
   });
 
   it("uses the login cache timestamp for later stale auto-refresh", async () => {

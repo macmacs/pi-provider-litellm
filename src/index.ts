@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Api, AssistantMessage, Model, OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import { AuthStorage, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { fingerprint, readCache, writeCache } from "./cache.js";
 import { setupLiteLLMCostTracking } from "./cost.js";
@@ -429,6 +429,48 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     });
     return refreshInProgress;
   }
+
+  type LoginContext = Pick<ExtensionContext, "modelRegistry" | "signal" | "ui">;
+
+  async function runLogin(ctx: LoginContext): Promise<void> {
+    const credential = await loginLiteLLM(
+      {
+        onAuth: () => undefined,
+        onDeviceCode: () => undefined,
+        onPrompt: async ({ message, placeholder }) => {
+          const value = await ctx.ui.input(message, placeholder);
+          if (value === undefined) throw new Error("Login cancelled");
+          return value;
+        },
+        onProgress: (message) => ctx.ui.notify(message, "info"),
+        onSelect: async () => undefined,
+        signal: ctx.signal,
+      },
+      (next) => {
+        cacheFetchedAt = next.fetchedAt;
+        registerProvider(next.baseUrl, next.models);
+        updateCosts(next.models);
+      },
+    );
+
+    ctx.modelRegistry.authStorage.set(PROVIDER_NAME, { type: "oauth", ...credential });
+    ctx.modelRegistry.refresh();
+    ctx.ui.notify(`Logged in to LiteLLM. Credentials saved to ${getAuthPath()}`, "info");
+  }
+
+  pi.on("input", async (event, ctx) => {
+    if (event.text.trim() !== `/login ${PROVIDER_NAME}`) return { action: "continue" };
+    if (!ctx.hasUI) return { action: "continue" };
+
+    try {
+      await runLogin(ctx);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== "Login cancelled") ctx.ui.notify(`LiteLLM login failed: ${message}`, "error");
+    }
+
+    return { action: "handled" };
+  });
 
   pi.registerCommand("litellm-refresh", {
     description: "Re-discover models from the LiteLLM proxy.",
