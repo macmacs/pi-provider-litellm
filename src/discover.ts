@@ -169,6 +169,41 @@ function findModelsDevModel(
   return catalog?.[provider]?.models?.[modelId];
 }
 
+// LiteLLM bridge routes prefix the model id with a transport segment (e.g.
+// "responses/gpt-5.5"). Drop a leading known bridge segment so the bare
+// catalog id can match.
+const BRIDGE_SEGMENTS = new Set(["responses"]);
+function stripBridgeSegment(modelId: string): string {
+  const [first, ...rest] = modelId.split("/");
+  return rest.length > 0 && BRIDGE_SEGMENTS.has(first) ? rest.join("/") : modelId;
+}
+
+// Resolve the catalog model for a /model/info entry. With LiteLLM aliases,
+// model_name may be a public alias (e.g. "ds-pro") while the real catalog key
+// is carried in litellm_params.model or model_info.key (e.g.
+// "deepseek/deepseek-v4-pro"). Match the alias first, then fall back to the
+// underlying key so thinkingLevelMap (xhigh etc.) is still carried.
+function findCatalogModelForInfo(entry: ModelInfoEntry): Model<Api> | undefined {
+  const info = entry.model_info ?? {};
+  const id = entry.model_name;
+  if (id) {
+    const direct = findCatalogModel(id, info.litellm_provider);
+    if (direct) return direct;
+  }
+  const underlyingKey = entry.litellm_params?.model ?? info.key;
+  if (underlyingKey && underlyingKey !== id) {
+    const { provider, modelId } = getFallbackProviderAndModel(underlyingKey, info.litellm_provider);
+    const viaKey = findCatalogModel(modelId, provider);
+    if (viaKey) return viaKey;
+    // LiteLLM bridge routes insert a transport segment between provider and
+    // model (e.g. "openai/responses/gpt-5.5" -> modelId "responses/gpt-5.5").
+    // Strip it so the catalog id ("gpt-5.5") matches.
+    const stripped = stripBridgeSegment(modelId);
+    if (stripped !== modelId) return findCatalogModel(stripped, provider);
+  }
+  return undefined;
+}
+
 function withTimeout(timeoutMs: number, signal?: AbortSignal): { signal: AbortSignal; cancel: () => void } {
   const controller = new AbortController();
   const onAbort = () => controller.abort(signal?.reason);
@@ -258,14 +293,24 @@ function mapFromModelInfo(entry: ModelInfoEntry): ProviderModelConfig | undefine
   if (!id) return undefined;
   const info = entry.model_info ?? {};
   if (!isSelectableMode(info.mode)) return undefined;
+  // Borrow the thinking-level map from the catalog when the model is known
+  // (e.g. deepseek-v4-pro), so per-model levels like "xhigh" stay available.
+  // The proxy's /model/info does not carry this mapping.
+  const catalogModel = findCatalogModelForInfo(entry);
   return {
     id,
     name: id,
     reasoning: info.supports_reasoning ?? false,
+    thinkingLevelMap: catalogModel?.thinkingLevelMap,
     input: info.supports_vision ? ["text", "image"] : ["text"],
-    cost: mapModelInfoCost(info, catalogModel?.cost),
-    contextWindow: info.max_input_tokens ?? DEFAULT_CONTEXT_WINDOW,
-    maxTokens: info.max_output_tokens ?? DEFAULT_MAX_TOKENS,
+    cost: {
+      input: (info.input_cost_per_token ?? 0) * 1_000_000,
+      output: (info.output_cost_per_token ?? 0) * 1_000_000,
+      cacheRead: (info.cache_read_input_token_cost ?? 0) * 1_000_000,
+      cacheWrite: (info.cache_creation_input_token_cost ?? 0) * 1_000_000,
+    },
+    contextWindow: info.max_input_tokens ?? catalogModel?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    maxTokens: info.max_output_tokens ?? catalogModel?.maxTokens ?? DEFAULT_MAX_TOKENS,
     compat: buildCompat(id),
   };
 }

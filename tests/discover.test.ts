@@ -201,6 +201,91 @@ describe("discoverModels via /model/info", () => {
     expect(result.models.map((m) => m.id)).toEqual(["chatgpt-5.5"]);
     expect(result.models[0]).toMatchObject({ id: "chatgpt-5.5", reasoning: true });
   });
+
+  it("borrows thinkingLevelMap from the catalog for known model ids (keeps xhigh etc.)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = input instanceof URL ? input.toString() : String(input);
+      if (url.endsWith("/model/info")) {
+        return jsonResponse(200, {
+          data: [
+            {
+              model_name: "deepseek-v4-pro",
+              model_info: { mode: "chat", supports_reasoning: true, litellm_provider: "deepseek" },
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const result = await discoverModels("https://litellm.example.com", "sk-test", {});
+
+    expect(result.source).toBe("model_info");
+    const model = result.models.find((m) => m.id === "deepseek-v4-pro");
+    // catalog entry for deepseek-v4-pro maps xhigh -> "max"
+    expect(model?.thinkingLevelMap?.xhigh).toBe("max");
+    // context window/max tokens fall back to the catalog when /model/info omits them
+    expect(model?.contextWindow).toBe(1_000_000);
+    expect(model?.maxTokens).toBe(384_000);
+  });
+
+  it("resolves thinkingLevelMap via the underlying key when model_name is an alias", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = input instanceof URL ? input.toString() : String(input);
+      if (url.endsWith("/model/info")) {
+        return jsonResponse(200, {
+          data: [
+            // public alias "ds-pro"; real catalog key in litellm_params.model
+            {
+              model_name: "ds-pro",
+              litellm_params: { model: "deepseek/deepseek-v4-pro" },
+              model_info: { mode: "chat", supports_reasoning: true, litellm_provider: "deepseek" },
+            },
+            // same, but the key is carried in model_info.key instead
+            {
+              model_name: "ds-pro-2",
+              model_info: {
+                mode: "chat",
+                supports_reasoning: true,
+                litellm_provider: "deepseek",
+                key: "deepseek/deepseek-v4-pro",
+              },
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const result = await discoverModels("https://litellm.example.com", "sk-test", {});
+
+    expect(result.models.find((m) => m.id === "ds-pro")?.thinkingLevelMap?.xhigh).toBe("max");
+    expect(result.models.find((m) => m.id === "ds-pro-2")?.thinkingLevelMap?.xhigh).toBe("max");
+  });
+
+  it("strips the LiteLLM bridge segment (responses/) to match the catalog", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = input instanceof URL ? input.toString() : String(input);
+      if (url.endsWith("/model/info")) {
+        return jsonResponse(200, {
+          data: [
+            {
+              model_name: "gpt5",
+              litellm_params: { model: "openai/responses/gpt-5.5" },
+              model_info: { mode: "responses", supports_reasoning: true, litellm_provider: "openai" },
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const result = await discoverModels("https://litellm.example.com", "sk-test", {});
+
+    // catalog entry for gpt-5.5 carries a thinkingLevelMap; without stripping
+    // "responses/" the lookup misses and the map is undefined.
+    expect(result.models.find((m) => m.id === "gpt5")?.thinkingLevelMap?.xhigh).toBe("xhigh");
+  });
 });
 
 describe("discoverModels fallback to /v1/models", () => {
