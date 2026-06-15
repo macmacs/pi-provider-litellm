@@ -22,6 +22,7 @@
 - Model discovery lives in `src/discover.ts`.
 - Prefer `/model/info` for rich metadata; fallback to `/v1/models` only on 401, 403, or 404.
 - The `/v1/models` fallback enriches metadata from the Pi catalog and `https://models.dev/api.json`; keep fallback metadata tests current.
+- `SELECTABLE_MODES` includes both `"chat"` and `"responses"`; models with other modes (embedding, image_generation, ...) are filtered out.
 - Keep `LITELLM_OFFLINE` and `LITELLM_DISCOVERY_TIMEOUT_MS` behavior compatible with README docs.
 - Stored Pi `/login litellm` credentials take precedence over `LITELLM_API_KEY`.
 - Cache data is stored as `litellm-models.json` under the Pi agent dir with a keyed API-key fingerprint and a 24-hour stale refresh window.

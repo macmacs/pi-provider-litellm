@@ -181,12 +181,15 @@ describe("discoverModels via /model/info", () => {
     });
   });
 
-  it("uses catalog costs when /model/info omits costs for Anthropic aliases", async () => {
+  it("keeps responses-mode models (e.g. ChatGPT subscription) and drops other non-chat modes", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = input instanceof URL ? input.toString() : String(input);
       if (url.endsWith("/model/info")) {
         return jsonResponse(200, {
-          data: [{ model_name: "opus-4.8", model_info: { mode: "chat" } }],
+          data: [
+            { model_name: "chatgpt-5.5", model_info: { mode: "responses", supports_reasoning: true } },
+            { model_name: "openai/text-embedding-3-large", model_info: { mode: "embedding" } },
+          ],
         });
       }
       throw new Error(`unexpected URL: ${url}`);
@@ -195,7 +198,8 @@ describe("discoverModels via /model/info", () => {
     const result = await discoverModels("https://litellm.example.com", "sk-test", {});
 
     expect(result.source).toBe("model_info");
-    expect(result.models[0]?.cost).toEqual({ input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 });
+    expect(result.models.map((m) => m.id)).toEqual(["chatgpt-5.5"]);
+    expect(result.models[0]).toMatchObject({ id: "chatgpt-5.5", reasoning: true });
   });
 });
 
