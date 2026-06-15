@@ -286,6 +286,31 @@ describe("discoverModels via /model/info", () => {
     // "responses/" the lookup misses and the map is undefined.
     expect(result.models.find((m) => m.id === "gpt5")?.thinkingLevelMap?.xhigh).toBe("xhigh");
   });
+
+  it("maps LiteLLM chatgpt subscription routes to OpenAI catalog metadata", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = input instanceof URL ? input.toString() : String(input);
+      if (url.endsWith("/model/info")) {
+        return jsonResponse(200, {
+          data: [
+            {
+              model_name: "chatgpt-5.5",
+              litellm_params: { model: "chatgpt/gpt-5.5" },
+              model_info: { mode: "responses", supports_reasoning: true, litellm_provider: "chatgpt" },
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const result = await discoverModels("https://litellm.example.com", "sk-test", {});
+    const model = result.models.find((m) => m.id === "chatgpt-5.5");
+
+    expect(model?.thinkingLevelMap).toMatchObject({ off: "none", xhigh: "xhigh" });
+    expect(model?.contextWindow).toBe(272_000);
+    expect(model?.maxTokens).toBe(128_000);
+  });
 });
 
 describe("discoverModels fallback to /v1/models", () => {
@@ -356,6 +381,46 @@ describe("discoverModels fallback to /v1/models", () => {
       compat: { supportsStore: false },
     });
     expect(result.models[0]?.cost).toEqual({ input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 });
+  });
+
+  it("uses OpenAI metadata for chatgpt aliases when only /v1/models is allowed", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = input instanceof URL ? input.toString() : String(input);
+      if (url.endsWith("/model/info")) return new Response(null, { status: 403 });
+      if (url.endsWith("/v1/models")) {
+        return jsonResponse(200, {
+          data: [{ id: "chatgpt-5.5", object: "model", owned_by: "openai" }],
+        });
+      }
+      if (url === "https://models.dev/api.json") {
+        return jsonResponse(200, {
+          openai: {
+            models: {
+              "gpt-5.5": {
+                id: "gpt-5.5",
+                name: "GPT-5.5",
+                reasoning: true,
+                modalities: { input: ["text"], output: ["text"] },
+                limit: { context: 1_050_000, output: 128_000 },
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const result = await discoverModels("https://litellm.example.com", "sk-test", {});
+
+    expect(result.source).toBe("models_list");
+    expect(result.models[0]).toMatchObject({
+      id: "chatgpt-5.5",
+      name: "GPT-5.5",
+      reasoning: true,
+      thinkingLevelMap: { off: "none", xhigh: "xhigh" },
+      contextWindow: 1_050_000,
+      maxTokens: 128_000,
+    });
   });
 
   it("throws when /model/info returns a non-401/403/404 error", async () => {

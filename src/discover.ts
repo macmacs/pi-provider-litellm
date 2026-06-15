@@ -23,6 +23,7 @@ function isSelectableMode(mode: string | undefined): boolean {
   return !mode || SELECTABLE_MODES.has(mode);
 }
 const KNOWN_PROVIDER_SET = new Set<string>(getProviders());
+const CATALOG_PROVIDER_ALIASES = new Map<string, KnownProvider>([["chatgpt", "openai"]]);
 const MODELS_DEV_URL = "https://models.dev/api.json";
 let modelsDevCatalog: ModelsDevResponse | undefined;
 
@@ -87,7 +88,16 @@ export function buildCompat(modelId: string): ProviderModelConfig["compat"] {
 function toKnownProvider(provider: string | undefined): KnownProvider | undefined {
   if (!provider) return undefined;
   const normalized = provider.toLowerCase();
+  const alias = CATALOG_PROVIDER_ALIASES.get(normalized);
+  if (alias) return alias;
   return KNOWN_PROVIDER_SET.has(normalized) ? (normalized as KnownProvider) : undefined;
+}
+
+function catalogModelIdCandidates(id: string): string[] {
+  const candidates = [id];
+  const chatgptAlias = /^chatgpt-(.+)$/i.exec(id);
+  if (chatgptAlias) candidates.push(`gpt-${chatgptAlias[1]}`);
+  return Array.from(new Set(candidates));
 }
 
 function findCatalogModel(id: string, ownedBy?: string): Model<Api> | undefined {
@@ -96,15 +106,24 @@ function findCatalogModel(id: string, ownedBy?: string): Model<Api> | undefined 
   const candidates = [toKnownProvider(ownedBy), prefixProvider, lookupIds.length > 1 ? "anthropic" : undefined].filter(
     (provider): provider is KnownProvider => provider !== undefined,
   );
+  const modelIds = catalogModelIdCandidates(id);
 
   for (const provider of candidates) {
-    const match = findCatalogModelInProvider(provider, lookupIds);
-    if (match) return match;
+    const providerModels = getModels(provider);
+    for (const modelId of modelIds) {
+      const exact = providerModels.find((model) => model.id === modelId);
+      if (exact) return exact;
+      const providerQualified = providerModels.find((model) => model.id === `${provider}/${modelId}`);
+      if (providerQualified) return providerQualified;
+    }
   }
 
   for (const provider of getProviders()) {
-    const match = findCatalogModelInProvider(provider, lookupIds);
-    if (match) return match;
+    const providerModels = getModels(provider);
+    for (const modelId of modelIds) {
+      const exact = providerModels.find((model) => model.id === modelId);
+      if (exact) return exact;
+    }
   }
 
   return undefined;
@@ -166,7 +185,11 @@ function findModelsDevModel(
 ): ModelsDevModel | undefined {
   const { provider, modelId } = getFallbackProviderAndModel(id, ownedBy);
   if (!provider) return undefined;
-  return catalog?.[provider]?.models?.[modelId];
+  for (const candidate of catalogModelIdCandidates(modelId)) {
+    const model = catalog?.[provider]?.models?.[candidate];
+    if (model) return model;
+  }
+  return undefined;
 }
 
 // LiteLLM bridge routes prefix the model id with a transport segment (e.g.
