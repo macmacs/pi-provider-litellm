@@ -4,7 +4,7 @@ LiteLLM proxy provider extension for [Pi](https://pi.dev).
 
 Discovers models from a self-hosted LiteLLM proxy and registers them under the `litellm` provider. Supports `/login litellm`, `/litellm-refresh`, LiteLLM MCP tools, LiteLLM Skills Gateway prompt injection, and Google ADC token auth. Tries `/model/info` first (admin endpoint with rich metadata), falls back to `/v1/models` (OpenAI-compatible) on 401/403/404, then tries `/health` plus per-endpoint `/model/info` for older LiteLLM proxies.
 
-Both `chat` and `responses` mode models are discovered (e.g. ChatGPT-subscription routes). When `/model/info` omits metadata, the extension cross-references the Pi model catalog to backfill thinking levels, context window, and max tokens.
+Both `chat` and `responses` mode models are discovered (e.g. ChatGPT-subscription routes). When `/model/info` omits metadata, the extension cross-references the Pi model catalog to backfill thinking levels, context window, and max tokens. OpenAI GPT reasoning models expose Pi's full thinking selector (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`) when catalog metadata is available.
 
 ## Install
 

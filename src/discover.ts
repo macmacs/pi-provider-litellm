@@ -24,6 +24,14 @@ function isSelectableMode(mode: string | undefined): boolean {
 }
 const KNOWN_PROVIDER_SET = new Set<string>(getProviders());
 const CATALOG_PROVIDER_ALIASES = new Map<string, KnownProvider>([["chatgpt", "openai"]]);
+const GPT_THINKING_LEVEL_MAP = {
+  off: "none",
+  minimal: "minimal",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+} satisfies NonNullable<ProviderModelConfig["thinkingLevelMap"]>;
 const MODELS_DEV_URL = "https://models.dev/api.json";
 let modelsDevCatalog: ModelsDevResponse | undefined;
 
@@ -103,27 +111,23 @@ function catalogModelIdCandidates(id: string): string[] {
 function findCatalogModel(id: string, ownedBy?: string): Model<Api> | undefined {
   const prefixProvider = toKnownProvider(id.split("/")[0]);
   const lookupIds = catalogLookupIds(id);
-  const candidates = [toKnownProvider(ownedBy), prefixProvider, lookupIds.length > 1 ? "anthropic" : undefined].filter(
-    (provider): provider is KnownProvider => provider !== undefined,
+  const candidates = Array.from(
+    new Set(
+      [toKnownProvider(ownedBy), prefixProvider, lookupIds.length > 1 ? "anthropic" : undefined].filter(
+        (provider): provider is KnownProvider => provider !== undefined,
+      ),
+    ),
   );
-  const modelIds = catalogModelIdCandidates(id);
 
   for (const provider of candidates) {
-    const providerModels = getModels(provider);
-    for (const modelId of modelIds) {
-      const exact = providerModels.find((model) => model.id === modelId);
-      if (exact) return exact;
-      const providerQualified = providerModels.find((model) => model.id === `${provider}/${modelId}`);
-      if (providerQualified) return providerQualified;
-    }
+    const model = findCatalogModelInProvider(provider, lookupIds);
+    if (model) return model;
   }
 
   for (const provider of getProviders()) {
-    const providerModels = getModels(provider);
-    for (const modelId of modelIds) {
-      const exact = providerModels.find((model) => model.id === modelId);
-      if (exact) return exact;
-    }
+    if (candidates.includes(provider)) continue;
+    const model = findCatalogModelInProvider(provider, lookupIds);
+    if (model) return model;
   }
 
   return undefined;
@@ -142,13 +146,24 @@ function catalogLookupIds(id: string): string[] {
 }
 
 function findCatalogModelInProvider(provider: KnownProvider, lookupIds: string[]): Model<Api> | undefined {
+  const providerModels = getModels(provider);
   for (const lookupId of lookupIds) {
-    const exact = getModels(provider).find((model) => model.id === lookupId);
-    if (exact) return exact;
-    const providerQualified = getModels(provider).find((model) => model.id === `${provider}/${lookupId}`);
-    if (providerQualified) return providerQualified;
+    for (const modelId of catalogModelIdCandidates(lookupId)) {
+      const exact = providerModels.find((model) => model.id === modelId);
+      if (exact) return exact;
+      const providerQualified = providerModels.find((model) => model.id === `${provider}/${modelId}`);
+      if (providerQualified) return providerQualified;
+    }
   }
   return undefined;
+}
+
+function catalogThinkingLevelMap(catalogModel: Model<Api> | undefined): ProviderModelConfig["thinkingLevelMap"] {
+  if (!catalogModel?.thinkingLevelMap) return undefined;
+  if (catalogModel.provider === "openai" && catalogModel.reasoning && /^gpt-\d/.test(catalogModel.id)) {
+    return GPT_THINKING_LEVEL_MAP;
+  }
+  return catalogModel.thinkingLevelMap;
 }
 
 function mapModelInfoCost(
@@ -324,7 +339,7 @@ function mapFromModelInfo(entry: ModelInfoEntry): ProviderModelConfig | undefine
     id,
     name: id,
     reasoning: info.supports_reasoning ?? false,
-    thinkingLevelMap: catalogModel?.thinkingLevelMap,
+    thinkingLevelMap: catalogThinkingLevelMap(catalogModel),
     input: info.supports_vision ? ["text", "image"] : ["text"],
     cost: {
       input: (info.input_cost_per_token ?? 0) * 1_000_000,
@@ -344,15 +359,18 @@ function mapFromHealthModelInfo(
 ): ProviderModelConfig | undefined {
   const model = mapFromModelInfo(entry);
   if (model || !fallbackId) return model;
-  if (!isSelectableMode(entry.model_info?.mode)) return undefined;
+  const info = entry.model_info ?? {};
+  if (!isSelectableMode(info.mode)) return undefined;
+  const catalogModel = findCatalogModel(fallbackId, info.litellm_provider);
   return {
     id: fallbackId,
     name: fallbackId,
-    reasoning: info.supports_reasoning ?? false,
-    input: info.supports_vision ? ["text", "image"] : ["text"],
+    reasoning: info.supports_reasoning ?? catalogModel?.reasoning ?? false,
+    thinkingLevelMap: catalogThinkingLevelMap(catalogModel),
+    input: info.supports_vision ? ["text", "image"] : (catalogModel?.input ?? ["text"]),
     cost: mapModelInfoCost(info, catalogModel?.cost),
-    contextWindow: info.max_input_tokens ?? DEFAULT_CONTEXT_WINDOW,
-    maxTokens: info.max_output_tokens ?? DEFAULT_MAX_TOKENS,
+    contextWindow: info.max_input_tokens ?? catalogModel?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    maxTokens: info.max_output_tokens ?? catalogModel?.maxTokens ?? DEFAULT_MAX_TOKENS,
     compat: buildCompat(fallbackId),
   };
 }
@@ -365,7 +383,7 @@ function mapFromHealthEndpoint(entry: { model?: string }): ProviderModelConfig |
     id,
     name: catalogModel?.name ?? id,
     reasoning: catalogModel?.reasoning ?? false,
-    thinkingLevelMap: catalogModel?.thinkingLevelMap,
+    thinkingLevelMap: catalogThinkingLevelMap(catalogModel),
     input: catalogModel?.input ?? ["text"],
     cost: catalogModel?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: catalogModel?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
@@ -386,7 +404,7 @@ function mapFromModelsList(
     id,
     name: modelsDevMetadata.name ?? catalogModel?.name ?? `${id} (no metadata)`,
     reasoning: modelsDevMetadata.reasoning ?? catalogModel?.reasoning ?? false,
-    thinkingLevelMap: catalogModel?.thinkingLevelMap,
+    thinkingLevelMap: catalogThinkingLevelMap(catalogModel),
     input: modelsDevMetadata.input ?? catalogModel?.input ?? ["text"],
     cost: modelsDevMetadata.cost ?? catalogModel?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: modelsDevMetadata.contextWindow ?? catalogModel?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,

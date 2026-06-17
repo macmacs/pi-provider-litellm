@@ -8,6 +8,15 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
+const GPT_THINKING_LEVEL_MAP = {
+  off: "none",
+  minimal: "minimal",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+};
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -307,7 +316,7 @@ describe("discoverModels via /model/info", () => {
     const result = await discoverModels("https://litellm.example.com", "sk-test", {});
     const model = result.models.find((m) => m.id === "chatgpt-5.5");
 
-    expect(model?.thinkingLevelMap).toMatchObject({ off: "none", xhigh: "xhigh" });
+    expect(model?.thinkingLevelMap).toEqual(GPT_THINKING_LEVEL_MAP);
     expect(model?.contextWindow).toBe(272_000);
     expect(model?.maxTokens).toBe(128_000);
   });
@@ -374,7 +383,7 @@ describe("discoverModels fallback to /v1/models", () => {
       id: "gpt-5.5",
       name: "GPT-5.5",
       reasoning: true,
-      thinkingLevelMap: { off: "none", xhigh: "xhigh" },
+      thinkingLevelMap: GPT_THINKING_LEVEL_MAP,
       input: ["text", "image"],
       contextWindow: 1050000,
       maxTokens: 128000,
@@ -417,7 +426,7 @@ describe("discoverModels fallback to /v1/models", () => {
       id: "chatgpt-5.5",
       name: "GPT-5.5",
       reasoning: true,
-      thinkingLevelMap: { off: "none", xhigh: "xhigh" },
+      thinkingLevelMap: GPT_THINKING_LEVEL_MAP,
       contextWindow: 1_050_000,
       maxTokens: 128_000,
     });
