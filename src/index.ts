@@ -17,6 +17,7 @@ import { getSessionIdFromFile } from "./litellm.js";
 import { createMcpToolDefinitions } from "./mcp-tools.js";
 import { createSkillsPromptSection, createSkillToolDefinitions, listSkills } from "./skills.js";
 import type { AuthFileEntry, CacheFile, DiscoveryOptions, DiscoveryResult, ResolvedCredentials } from "./types.js";
+import { setupLiteLLMUsageStatus } from "./usage.js";
 
 const PROVIDER_NAME = "litellm";
 const ENV_BASE_URL = "LITELLM_BASE_URL";
@@ -425,6 +426,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   registerProvider(creds.baseUrl, models);
 
   updateCosts = setupLiteLLMCostTracking(pi, models);
+  setupLiteLLMUsageStatus(pi, { resolveCredentials });
 
   let refreshInProgress: Promise<RefreshResult> | null = null;
 

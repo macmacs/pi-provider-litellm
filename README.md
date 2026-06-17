@@ -2,7 +2,7 @@
 
 LiteLLM proxy provider extension for [Pi](https://pi.dev).
 
-Discovers models from a self-hosted LiteLLM proxy and registers them under the `litellm` provider. Supports `/login litellm`, `/litellm-refresh`, LiteLLM MCP tools, LiteLLM Skills Gateway prompt injection, and Google ADC token auth. Tries `/model/info` first (admin endpoint with rich metadata), falls back to `/v1/models` (OpenAI-compatible) on 401/403/404, then tries `/health` plus per-endpoint `/model/info` for older LiteLLM proxies.
+Discovers models from a self-hosted LiteLLM proxy and registers them under the `litellm` provider. Supports `/login litellm`, `/litellm-refresh`, LiteLLM key usage in the statusline, LiteLLM MCP tools, LiteLLM Skills Gateway prompt injection, and Google ADC token auth. Tries `/model/info` first (admin endpoint with rich metadata), falls back to `/v1/models` (OpenAI-compatible) on 401/403/404, then tries `/health` plus per-endpoint `/model/info` for older LiteLLM proxies.
 
 ## Install
 
@@ -59,6 +59,8 @@ Stored pi credentials for `litellm` take precedence over `LITELLM_API_KEY`; the 
 /model
 ```
 
+When the active model uses the `litellm` provider, the footer statusline shows the active key's total LiteLLM spend, for example `LiteLLM $1.25/$10.00`. The extension reads this from `GET /key/info` with the active bearer token and omits the key from the URL by default. If your LLM key is restricted to `llm_api_routes`, set `LITELLM_USAGE_API_KEY` or `LITELLM_USAGE_API_KEY_HELPER` to a read-only/default/admin key that can call `/key/info`; the extension will use that key only to read usage for the active LLM key. If your proxy does not have database-backed key management or the key cannot query usage, the statusline shows `LiteLLM n/a`.
+
 ## Optional environment variables
 
 | Variable | Default | Effect |
@@ -68,6 +70,10 @@ Stored pi credentials for `litellm` take precedence over `LITELLM_API_KEY`; the 
 | `GOOGLE_APPLICATION_CREDENTIALS` | Google default ADC path | Optional path to an ADC JSON file used by `LITELLM_GCLOUD_TOKEN_AUTH`. If unset, the extension checks the default gcloud ADC locations. |
 | `LITELLM_OFFLINE` | unset | If `1`, skip discovery on this start; use cache only |
 | `LITELLM_DISCOVERY_TIMEOUT_MS` | `5000` | Discovery fetch timeout in ms; `0` to skip discovery |
+| `LITELLM_USAGE_STATUS` | enabled | Set to `0` to disable the LiteLLM key usage statusline. |
+| `LITELLM_USAGE_REFRESH_MS` | `60000` | Minimum interval in ms for cached statusline usage reads. The extension also forces a refresh after each LiteLLM turn. |
+| `LITELLM_USAGE_API_KEY` | unset | Optional LiteLLM read key used only for `/key/info?key=<active-llm-key>` when the active LLM key is restricted to `llm_api_routes`. |
+| `LITELLM_USAGE_API_KEY_HELPER` | unset | Command that prints the optional usage read key. Takes precedence over `LITELLM_USAGE_API_KEY`. |
 
 `LITELLM_DISCOVERY_TIMEOUT_MS=0` only disables startup and refresh model discovery. It does not replace the base URL or API key settings required to send requests when you are not using `/login litellm`.
 
