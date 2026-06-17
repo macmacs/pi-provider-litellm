@@ -8,6 +8,15 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
+const GPT_THINKING_LEVEL_MAP = {
+  off: "none",
+  minimal: "minimal",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+};
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -181,6 +190,22 @@ describe("discoverModels via /model/info", () => {
     });
   });
 
+  it("exposes all Pi thinking levels for GPT reasoning models", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = input instanceof URL ? input.toString() : String(input);
+      if (url.endsWith("/model/info")) {
+        return jsonResponse(200, {
+          data: [{ model_name: "openai/gpt-5.5", model_info: { mode: "chat", supports_reasoning: true } }],
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const result = await discoverModels("https://litellm.example.com", "sk-test", {});
+
+    expect(result.models[0]?.thinkingLevelMap).toEqual(GPT_THINKING_LEVEL_MAP);
+  });
+
   it("uses catalog costs when /model/info omits costs for Anthropic aliases", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = input instanceof URL ? input.toString() : String(input);
@@ -260,7 +285,7 @@ describe("discoverModels fallback to /v1/models", () => {
       id: "gpt-5.5",
       name: "GPT-5.5",
       reasoning: true,
-      thinkingLevelMap: { off: "none", xhigh: "xhigh" },
+      thinkingLevelMap: GPT_THINKING_LEVEL_MAP,
       input: ["text", "image"],
       contextWindow: 1050000,
       maxTokens: 128000,

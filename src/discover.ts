@@ -15,6 +15,14 @@ const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
 const KNOWN_PROVIDER_SET = new Set<string>(getProviders());
+const GPT_THINKING_LEVEL_MAP = {
+  off: "none",
+  minimal: "minimal",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+} satisfies NonNullable<ProviderModelConfig["thinkingLevelMap"]>;
 const MODELS_DEV_URL = "https://models.dev/api.json";
 let modelsDevCatalog: ModelsDevResponse | undefined;
 
@@ -122,6 +130,14 @@ function findCatalogModelInProvider(provider: KnownProvider, lookupIds: string[]
     if (providerQualified) return providerQualified;
   }
   return undefined;
+}
+
+function catalogThinkingLevelMap(catalogModel: Model<Api> | undefined): ProviderModelConfig["thinkingLevelMap"] {
+  if (!catalogModel?.thinkingLevelMap) return undefined;
+  if (catalogModel.provider === "openai" && catalogModel.reasoning && /^gpt-\d/.test(catalogModel.id)) {
+    return GPT_THINKING_LEVEL_MAP;
+  }
+  return catalogModel.thinkingLevelMap;
 }
 
 function mapModelInfoCost(
@@ -255,6 +271,7 @@ function mapFromModelInfo(entry: ModelInfoEntry): ProviderModelConfig | undefine
     id,
     name: id,
     reasoning: info.supports_reasoning ?? false,
+    thinkingLevelMap: catalogThinkingLevelMap(catalogModel),
     input: info.supports_vision ? ["text", "image"] : ["text"],
     cost: mapModelInfoCost(info, catalogModel?.cost),
     contextWindow: info.max_input_tokens ?? DEFAULT_CONTEXT_WINDOW,
@@ -276,6 +293,7 @@ function mapFromHealthModelInfo(
     id: fallbackId,
     name: fallbackId,
     reasoning: info.supports_reasoning ?? false,
+    thinkingLevelMap: catalogThinkingLevelMap(catalogModel),
     input: info.supports_vision ? ["text", "image"] : ["text"],
     cost: mapModelInfoCost(info, catalogModel?.cost),
     contextWindow: info.max_input_tokens ?? DEFAULT_CONTEXT_WINDOW,
@@ -292,7 +310,7 @@ function mapFromHealthEndpoint(entry: { model?: string }): ProviderModelConfig |
     id,
     name: catalogModel?.name ?? id,
     reasoning: catalogModel?.reasoning ?? false,
-    thinkingLevelMap: catalogModel?.thinkingLevelMap,
+    thinkingLevelMap: catalogThinkingLevelMap(catalogModel),
     input: catalogModel?.input ?? ["text"],
     cost: catalogModel?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: catalogModel?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
@@ -313,7 +331,7 @@ function mapFromModelsList(
     id,
     name: modelsDevMetadata.name ?? catalogModel?.name ?? `${id} (no metadata)`,
     reasoning: modelsDevMetadata.reasoning ?? catalogModel?.reasoning ?? false,
-    thinkingLevelMap: catalogModel?.thinkingLevelMap,
+    thinkingLevelMap: catalogThinkingLevelMap(catalogModel),
     input: modelsDevMetadata.input ?? catalogModel?.input ?? ["text"],
     cost: modelsDevMetadata.cost ?? catalogModel?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: modelsDevMetadata.contextWindow ?? catalogModel?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
