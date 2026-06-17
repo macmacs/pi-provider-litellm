@@ -22,6 +22,8 @@
 - Model discovery lives in `src/discover.ts`.
 - Prefer `/model/info` for rich metadata; fallback to `/v1/models` only on 401, 403, or 404.
 - The `/v1/models` fallback enriches metadata from the Pi catalog and `https://models.dev/api.json`; keep fallback metadata tests current.
+- On the `/model/info` path, `findCatalogModelForInfo` cross-references the Pi catalog to backfill `thinkingLevelMap`, `contextWindow`, and `maxTokens` when the proxy omits them. It resolves aliased models via `litellm_params.model` / `model_info.key` and strips bridge-route segments (e.g. `"responses/"`) so catalog IDs match.
+- `CATALOG_PROVIDER_ALIASES` maps `"chatgpt"` to `"openai"`, and `catalogModelIdCandidates` rewrites `"chatgpt-*"` IDs to `"gpt-*"` so ChatGPT-subscription models find their catalog entries.
 - Keep `LITELLM_OFFLINE` and `LITELLM_DISCOVERY_TIMEOUT_MS` behavior compatible with README docs.
 - Stored Pi `/login litellm` credentials take precedence over `LITELLM_API_KEY`.
 - Cache data is stored as `litellm-models.json` under the Pi agent dir with a keyed API-key fingerprint and a 24-hour stale refresh window.

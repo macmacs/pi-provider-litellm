@@ -4,6 +4,8 @@ LiteLLM proxy provider extension for [Pi](https://pi.dev).
 
 Discovers models from a self-hosted LiteLLM proxy and registers them under the `litellm` provider. Supports `/login litellm`, `/litellm-refresh`, LiteLLM MCP tools, LiteLLM Skills Gateway prompt injection, and Google ADC token auth. Tries `/model/info` first (admin endpoint with rich metadata), falls back to `/v1/models` (OpenAI-compatible) on 401/403/404, then tries `/health` plus per-endpoint `/model/info` for older LiteLLM proxies.
 
+When `/model/info` omits metadata, the extension cross-references the Pi model catalog to backfill thinking levels, context window, and max tokens, including aliased LiteLLM routes whose public name differs from the underlying catalog model.
+
 ## Install
 
 ```bash
@@ -149,6 +151,7 @@ If the cache is older than 24 hours, the extension refreshes it in the backgroun
 |---|---|
 | "no credentials" warning at startup | Env vars not set and no OAuth credential — run `/login litellm` |
 | "discovered no models" | Proxy returned an empty list — check pi's startup log and verify `/model/info`, `/v1/models`, or `/health` responds |
+| ChatGPT-subscription models missing | Verify `/model/info` returns the expected models; this extension discovers both `chat` and `responses` mode models |
 | `/model/info` returning 401/403/404 | Expected behavior with virtual keys — extension falls back to `/v1/models` |
 | Discovery times out | Increase `LITELLM_DISCOVERY_TIMEOUT_MS` or set `LITELLM_OFFLINE=1` to fall back on cached models |
 | `401 Token expired` | Set `LITELLM_API_KEY_HELPER`. |

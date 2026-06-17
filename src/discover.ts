@@ -15,6 +15,7 @@ const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
 const KNOWN_PROVIDER_SET = new Set<string>(getProviders());
+const CATALOG_PROVIDER_ALIASES = new Map<string, KnownProvider>([["chatgpt", "openai"]]);
 const MODELS_DEV_URL = "https://models.dev/api.json";
 let modelsDevCatalog: ModelsDevResponse | undefined;
 
@@ -79,24 +80,38 @@ export function buildCompat(modelId: string): ProviderModelConfig["compat"] {
 function toKnownProvider(provider: string | undefined): KnownProvider | undefined {
   if (!provider) return undefined;
   const normalized = provider.toLowerCase();
+  const alias = CATALOG_PROVIDER_ALIASES.get(normalized);
+  if (alias) return alias;
   return KNOWN_PROVIDER_SET.has(normalized) ? (normalized as KnownProvider) : undefined;
+}
+
+function catalogModelIdCandidates(id: string): string[] {
+  const candidates = [id];
+  const chatgptAlias = /^chatgpt-(.+)$/i.exec(id);
+  if (chatgptAlias) candidates.push(`gpt-${chatgptAlias[1]}`);
+  return Array.from(new Set(candidates));
 }
 
 function findCatalogModel(id: string, ownedBy?: string): Model<Api> | undefined {
   const prefixProvider = toKnownProvider(id.split("/")[0]);
   const lookupIds = catalogLookupIds(id);
-  const candidates = [toKnownProvider(ownedBy), prefixProvider, lookupIds.length > 1 ? "anthropic" : undefined].filter(
-    (provider): provider is KnownProvider => provider !== undefined,
+  const candidates = Array.from(
+    new Set(
+      [toKnownProvider(ownedBy), prefixProvider, lookupIds.length > 1 ? "anthropic" : undefined].filter(
+        (provider): provider is KnownProvider => provider !== undefined,
+      ),
+    ),
   );
 
   for (const provider of candidates) {
-    const match = findCatalogModelInProvider(provider, lookupIds);
-    if (match) return match;
+    const model = findCatalogModelInProvider(provider, lookupIds);
+    if (model) return model;
   }
 
   for (const provider of getProviders()) {
-    const match = findCatalogModelInProvider(provider, lookupIds);
-    if (match) return match;
+    if (candidates.includes(provider)) continue;
+    const model = findCatalogModelInProvider(provider, lookupIds);
+    if (model) return model;
   }
 
   return undefined;
@@ -115,11 +130,14 @@ function catalogLookupIds(id: string): string[] {
 }
 
 function findCatalogModelInProvider(provider: KnownProvider, lookupIds: string[]): Model<Api> | undefined {
+  const providerModels = getModels(provider);
   for (const lookupId of lookupIds) {
-    const exact = getModels(provider).find((model) => model.id === lookupId);
-    if (exact) return exact;
-    const providerQualified = getModels(provider).find((model) => model.id === `${provider}/${lookupId}`);
-    if (providerQualified) return providerQualified;
+    for (const modelId of catalogModelIdCandidates(lookupId)) {
+      const exact = providerModels.find((model) => model.id === modelId);
+      if (exact) return exact;
+      const providerQualified = providerModels.find((model) => model.id === `${provider}/${modelId}`);
+      if (providerQualified) return providerQualified;
+    }
   }
   return undefined;
 }
@@ -158,7 +176,46 @@ function findModelsDevModel(
 ): ModelsDevModel | undefined {
   const { provider, modelId } = getFallbackProviderAndModel(id, ownedBy);
   if (!provider) return undefined;
-  return catalog?.[provider]?.models?.[modelId];
+  for (const candidate of catalogModelIdCandidates(modelId)) {
+    const model = catalog?.[provider]?.models?.[candidate];
+    if (model) return model;
+  }
+  return undefined;
+}
+
+// LiteLLM bridge routes prefix the model id with a transport segment (e.g.
+// "responses/gpt-5.5"). Drop a leading known bridge segment so the bare
+// catalog id can match.
+const BRIDGE_SEGMENTS = new Set(["responses"]);
+function stripBridgeSegment(modelId: string): string {
+  const [first, ...rest] = modelId.split("/");
+  return rest.length > 0 && BRIDGE_SEGMENTS.has(first) ? rest.join("/") : modelId;
+}
+
+// Resolve the catalog model for a /model/info entry. With LiteLLM aliases,
+// model_name may be a public alias (e.g. "ds-pro") while the real catalog key
+// is carried in litellm_params.model or model_info.key (e.g.
+// "deepseek/deepseek-v4-pro"). Match the alias first, then fall back to the
+// underlying key so thinkingLevelMap (xhigh etc.) is still carried.
+function findCatalogModelForInfo(entry: ModelInfoEntry): Model<Api> | undefined {
+  const info = entry.model_info ?? {};
+  const id = entry.model_name;
+  if (id) {
+    const direct = findCatalogModel(id, info.litellm_provider);
+    if (direct) return direct;
+  }
+  const underlyingKey = entry.litellm_params?.model ?? info.key;
+  if (underlyingKey && underlyingKey !== id) {
+    const { provider, modelId } = getFallbackProviderAndModel(underlyingKey, info.litellm_provider);
+    const viaKey = findCatalogModel(modelId, provider);
+    if (viaKey) return viaKey;
+    // LiteLLM bridge routes insert a transport segment between provider and
+    // model (e.g. "openai/responses/gpt-5.5" -> modelId "responses/gpt-5.5").
+    // Strip it so the catalog id ("gpt-5.5") matches.
+    const stripped = stripBridgeSegment(modelId);
+    if (stripped !== modelId) return findCatalogModel(stripped, provider);
+  }
+  return undefined;
 }
 
 function withTimeout(timeoutMs: number, signal?: AbortSignal): { signal: AbortSignal; cancel: () => void } {
@@ -250,15 +307,24 @@ function mapFromModelInfo(entry: ModelInfoEntry): ProviderModelConfig | undefine
   if (!id) return undefined;
   const info = entry.model_info ?? {};
   if (info.mode && info.mode !== "chat") return undefined;
-  const catalogModel = findCatalogModel(id);
+  // Borrow the thinking-level map from the catalog when the model is known
+  // (e.g. deepseek-v4-pro), so per-model levels like "xhigh" stay available.
+  // The proxy's /model/info does not carry this mapping.
+  const catalogModel = findCatalogModelForInfo(entry);
   return {
     id,
     name: id,
     reasoning: info.supports_reasoning ?? false,
+    thinkingLevelMap: catalogModel?.thinkingLevelMap,
     input: info.supports_vision ? ["text", "image"] : ["text"],
-    cost: mapModelInfoCost(info, catalogModel?.cost),
-    contextWindow: info.max_input_tokens ?? DEFAULT_CONTEXT_WINDOW,
-    maxTokens: info.max_output_tokens ?? DEFAULT_MAX_TOKENS,
+    cost: {
+      input: (info.input_cost_per_token ?? 0) * 1_000_000,
+      output: (info.output_cost_per_token ?? 0) * 1_000_000,
+      cacheRead: (info.cache_read_input_token_cost ?? 0) * 1_000_000,
+      cacheWrite: (info.cache_creation_input_token_cost ?? 0) * 1_000_000,
+    },
+    contextWindow: info.max_input_tokens ?? catalogModel?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    maxTokens: info.max_output_tokens ?? catalogModel?.maxTokens ?? DEFAULT_MAX_TOKENS,
     compat: buildCompat(id),
   };
 }
@@ -269,17 +335,18 @@ function mapFromHealthModelInfo(
 ): ProviderModelConfig | undefined {
   const model = mapFromModelInfo(entry);
   if (model || !fallbackId) return model;
-  if (entry.model_info?.mode && entry.model_info.mode !== "chat") return undefined;
   const info = entry.model_info ?? {};
-  const catalogModel = findCatalogModel(fallbackId);
+  if (info.mode && info.mode !== "chat") return undefined;
+  const catalogModel = findCatalogModel(fallbackId, info.litellm_provider);
   return {
     id: fallbackId,
     name: fallbackId,
-    reasoning: info.supports_reasoning ?? false,
-    input: info.supports_vision ? ["text", "image"] : ["text"],
+    reasoning: info.supports_reasoning ?? catalogModel?.reasoning ?? false,
+    thinkingLevelMap: catalogModel?.thinkingLevelMap,
+    input: info.supports_vision ? ["text", "image"] : (catalogModel?.input ?? ["text"]),
     cost: mapModelInfoCost(info, catalogModel?.cost),
-    contextWindow: info.max_input_tokens ?? DEFAULT_CONTEXT_WINDOW,
-    maxTokens: info.max_output_tokens ?? DEFAULT_MAX_TOKENS,
+    contextWindow: info.max_input_tokens ?? catalogModel?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    maxTokens: info.max_output_tokens ?? catalogModel?.maxTokens ?? DEFAULT_MAX_TOKENS,
     compat: buildCompat(fallbackId),
   };
 }

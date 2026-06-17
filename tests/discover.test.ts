@@ -181,12 +181,17 @@ describe("discoverModels via /model/info", () => {
     });
   });
 
-  it("uses catalog costs when /model/info omits costs for Anthropic aliases", async () => {
+  it("borrows thinkingLevelMap from the catalog for known model ids (keeps xhigh etc.)", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = input instanceof URL ? input.toString() : String(input);
       if (url.endsWith("/model/info")) {
         return jsonResponse(200, {
-          data: [{ model_name: "opus-4.8", model_info: { mode: "chat" } }],
+          data: [
+            {
+              model_name: "deepseek-v4-pro",
+              model_info: { mode: "chat", supports_reasoning: true, litellm_provider: "deepseek" },
+            },
+          ],
         });
       }
       throw new Error(`unexpected URL: ${url}`);
@@ -195,7 +200,95 @@ describe("discoverModels via /model/info", () => {
     const result = await discoverModels("https://litellm.example.com", "sk-test", {});
 
     expect(result.source).toBe("model_info");
-    expect(result.models[0]?.cost).toEqual({ input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 });
+    const model = result.models.find((m) => m.id === "deepseek-v4-pro");
+    // catalog entry for deepseek-v4-pro maps xhigh -> "max"
+    expect(model?.thinkingLevelMap?.xhigh).toBe("max");
+    // context window/max tokens fall back to the catalog when /model/info omits them
+    expect(model?.contextWindow).toBe(1_000_000);
+    expect(model?.maxTokens).toBe(384_000);
+  });
+
+  it("resolves thinkingLevelMap via the underlying key when model_name is an alias", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = input instanceof URL ? input.toString() : String(input);
+      if (url.endsWith("/model/info")) {
+        return jsonResponse(200, {
+          data: [
+            // public alias "ds-pro"; real catalog key in litellm_params.model
+            {
+              model_name: "ds-pro",
+              litellm_params: { model: "deepseek/deepseek-v4-pro" },
+              model_info: { mode: "chat", supports_reasoning: true, litellm_provider: "deepseek" },
+            },
+            // same, but the key is carried in model_info.key instead
+            {
+              model_name: "ds-pro-2",
+              model_info: {
+                mode: "chat",
+                supports_reasoning: true,
+                litellm_provider: "deepseek",
+                key: "deepseek/deepseek-v4-pro",
+              },
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const result = await discoverModels("https://litellm.example.com", "sk-test", {});
+
+    expect(result.models.find((m) => m.id === "ds-pro")?.thinkingLevelMap?.xhigh).toBe("max");
+    expect(result.models.find((m) => m.id === "ds-pro-2")?.thinkingLevelMap?.xhigh).toBe("max");
+  });
+
+  it("strips the LiteLLM bridge segment (responses/) to match the catalog", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = input instanceof URL ? input.toString() : String(input);
+      if (url.endsWith("/model/info")) {
+        return jsonResponse(200, {
+          data: [
+            {
+              model_name: "gpt5",
+              litellm_params: { model: "openai/responses/gpt-5.5" },
+              model_info: { mode: "chat", supports_reasoning: true, litellm_provider: "openai" },
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const result = await discoverModels("https://litellm.example.com", "sk-test", {});
+
+    // catalog entry for gpt-5.5 carries a thinkingLevelMap; without stripping
+    // "responses/" the lookup misses and the map is undefined.
+    expect(result.models.find((m) => m.id === "gpt5")?.thinkingLevelMap?.xhigh).toBe("xhigh");
+  });
+
+  it("maps LiteLLM chatgpt aliases to OpenAI catalog metadata", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = input instanceof URL ? input.toString() : String(input);
+      if (url.endsWith("/model/info")) {
+        return jsonResponse(200, {
+          data: [
+            {
+              model_name: "chatgpt-5.5",
+              litellm_params: { model: "chatgpt/gpt-5.5" },
+              model_info: { mode: "chat", supports_reasoning: true, litellm_provider: "chatgpt" },
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const result = await discoverModels("https://litellm.example.com", "sk-test", {});
+    const model = result.models.find((m) => m.id === "chatgpt-5.5");
+
+    expect(model?.thinkingLevelMap).toMatchObject({ off: "none", xhigh: "xhigh" });
+    expect(model?.contextWindow).toBe(272_000);
+    expect(model?.maxTokens).toBe(128_000);
   });
 });
 
@@ -267,6 +360,46 @@ describe("discoverModels fallback to /v1/models", () => {
       compat: { supportsStore: false },
     });
     expect(result.models[0]?.cost).toEqual({ input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 });
+  });
+
+  it("uses OpenAI metadata for chatgpt aliases when only /v1/models is allowed", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = input instanceof URL ? input.toString() : String(input);
+      if (url.endsWith("/model/info")) return new Response(null, { status: 403 });
+      if (url.endsWith("/v1/models")) {
+        return jsonResponse(200, {
+          data: [{ id: "chatgpt-5.5", object: "model", owned_by: "openai" }],
+        });
+      }
+      if (url === "https://models.dev/api.json") {
+        return jsonResponse(200, {
+          openai: {
+            models: {
+              "gpt-5.5": {
+                id: "gpt-5.5",
+                name: "GPT-5.5",
+                reasoning: true,
+                modalities: { input: ["text"], output: ["text"] },
+                limit: { context: 1_050_000, output: 128_000 },
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const result = await discoverModels("https://litellm.example.com", "sk-test", {});
+
+    expect(result.source).toBe("models_list");
+    expect(result.models[0]).toMatchObject({
+      id: "chatgpt-5.5",
+      name: "GPT-5.5",
+      reasoning: true,
+      thinkingLevelMap: { off: "none", xhigh: "xhigh" },
+      contextWindow: 1_050_000,
+      maxTokens: 128_000,
+    });
   });
 
   it("throws when /model/info returns a non-401/403/404 error", async () => {
